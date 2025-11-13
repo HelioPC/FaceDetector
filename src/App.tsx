@@ -8,36 +8,48 @@ type DetectionStatus = 'none' | 'female' | 'male';
 export default function App() {
   const [cameraState, setCameraState] = useState<CameraState>('no-permission');
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [age, setAge] = useState<number>(0);
-  const [detectionStatus, setDetectionStatus] = useState<DetectionStatus>('none');
-  const [isSmiling, setIsSmiling] = useState(false);
-  const [isLookingAtCamera, setIsLookingAtCamera] = useState<boolean>(false);
-  const [confidence, setConfidence] = useState(0);
-  const [framesAnalyzed, setFramesAnalyzed] = useState(0);
+  const [faceData, setFaceData] = useState({
+    age: 0,
+    gender: 'none' as DetectionStatus,
+    isSmiling: false,
+    isLooking: false,
+    confidence: 0,
+    frames: 0
+  });
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);  // para desenho
+  const captureCanvasRef = useRef<HTMLCanvasElement>(null);  // para foto
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    const loadApp = async () => {
+    const loadModels = async () => {
       setIsLoading(true);
+      const modelPath = '/models';
+
       try {
+        console.log('🧠 Carregando modelos da Face API a partir de', modelPath);
+
+        // Usa o SSD MobileNet v1 (mais preciso que o Tiny Face Detector)
         await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
-          faceapi.nets.ageGenderNet.loadFromUri('/models'),
-          faceapi.nets.faceExpressionNet.loadFromUri('/models'),
-          faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+          faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
+          faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
+          faceapi.nets.faceRecognitionNet.loadFromUri(modelPath),
+          faceapi.nets.faceExpressionNet.loadFromUri(modelPath),
+          faceapi.nets.ageGenderNet.loadFromUri(modelPath),
         ]);
-        console.log('✅ Modelos carregados com sucesso');
+
+        console.log('✅ Todos os modelos carregados com sucesso');
       } catch (err) {
-        console.error('Erro ao carregar modelos:', err);
-        alert('Falha ao carregar modelos de IA.');
+        console.error('❌ Erro ao carregar modelos:', err);
+        alert('Falha ao carregar modelos de IA. Verifique se a pasta /public/models existe e contém os ficheiros corretos.');
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     };
-    loadApp();
+
+    loadModels();
   }, []);
 
   useEffect(() => {
@@ -50,83 +62,149 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let animationFrameId: number | null = null;
+    let lastDetectionTime = 0;
+    const DETECTION_INTERVAL = 500; // 500ms entre detecções
 
-    const runDetection = async () => {
-      if (!videoRef.current) return;
-
-      const detections = await faceapi
-        .detectAllFaces(
-          videoRef.current,
-          new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.9 })
-        )
-        .withFaceLandmarks()
-        .withAgeAndGender()
-        .withFaceExpressions();
-
-      if (detections.length > 0) {
-        const best = detections[0];
-
-        // 🔹 Atualiza métricas básicas
-        setFramesAnalyzed((prev) => prev + 1);
-        setConfidence(Math.round(best.detection.score * 100));
-
-        // 🔹 Idade estimada
-        setAge(Math.round(best.age));
-
-        // 🔹 Género
-        if (best.gender === 'female') {
-          setDetectionStatus('female');
-        } else if (best.gender === 'male') {
-          setDetectionStatus('male');
+    const runDetection = async (currentTime: number) => {
+      if (cameraState !== 'camera-active') {
+        return
+      }
+      if (currentTime - lastDetectionTime < DETECTION_INTERVAL) {
+        if (cameraState === 'camera-active') {
+          animationFrameId = requestAnimationFrame(runDetection);
         }
+        return;
+      }
 
-        // 🔹 Sorriso
-        const smileProb = best.expressions.happy ?? 0;
-        setIsSmiling(smileProb > 0.7);
+      const video = videoRef.current;
+      const canvas = overlayCanvasRef.current;
+      if (!video || !canvas) {
+        animationFrameId = requestAnimationFrame(runDetection);
+        return;
+      }
 
-        // 🔹 Verifica se está a olhar para a câmera
-        const landmarks = best.landmarks;
-        const leftEye = landmarks.getLeftEye();
-        const rightEye = landmarks.getRightEye();
-        const nose = landmarks.getNose();
+      // ESPERA O VÍDEO TER DIMENSÕES
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        animationFrameId = requestAnimationFrame(runDetection);
+        return;
+      }
 
-        if (leftEye && rightEye && nose) {
-          const eyeCenterX = (leftEye[0].x + rightEye[3].x) / 2;
-          const noseX = nose[3].x;
-          const offset = Math.abs(noseX - eyeCenterX);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
 
-          // Threshold ajustável (quanto menor, mais centralizado o rosto)
-          const isLooking = offset < 15;
-          setIsLookingAtCamera(isLooking);
+      try {
+        const detections = await faceapi
+          .detectAllFaces(
+            video,
+            new faceapi.SsdMobilenetv1Options({
+              minConfidence: 0.5,
+              maxResults: 2,
+            })
+          )
+          .withFaceLandmarks()
+          .withAgeAndGender()
+          .withFaceExpressions();
+
+        // REDIMENSIONA CANVAS
+        const displaySize = { width: video.videoWidth, height: video.videoHeight };
+        faceapi.matchDimensions(canvas, displaySize);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (detections.length > 0) {
+          const best = detections.reduce((prev, curr) => {
+            const prevArea = prev.detection.box.width * prev.detection.box.height;
+            const currArea = curr.detection.box.width * curr.detection.box.height;
+            return currArea > prevArea ? curr : prev;
+          }, detections[0]);
+
+          const smileProb = best.expressions.happy ?? 0;
+          const isSmiling = smileProb > 0.7;
+
+          const landmarks = best.landmarks;
+          const leftEye = landmarks.getLeftEye();
+          const rightEye = landmarks.getRightEye();
+          const nose = landmarks.getNose();
+          let isLooking = false;
+          if (leftEye && rightEye && nose) {
+            const eyeCenterX = (leftEye[0].x + rightEye[3].x) / 2;
+            const noseX = nose[3].x;
+            const offset = Math.abs(noseX - eyeCenterX);
+            isLooking = offset < 18;
+          }
+
+          setFaceData({
+            age: Math.round(best.age),
+            gender: best.gender === 'female' ? 'female' : best.gender === 'male' ? 'male' : 'none',
+            isSmiling,
+            isLooking,
+            confidence: Math.round(best.detection.score * 100),
+            frames: faceData.frames + 1
+          });
+
+          // DESENHA
+          const resized = faceapi.resizeResults(detections, displaySize);
+
+          faceapi.draw.drawDetections(canvas, resized);
+          faceapi.draw.drawFaceLandmarks(canvas, resized);
+          faceapi.draw.drawFaceExpressions(canvas, resized, 0.05);
+
+          // TEXTO
+          const box = resized[0].detection.box;
+          const text = `${best.gender === 'male' ? 'Masculino' : 'Feminino'} | ${Math.round(best.age)} anos`;
+          ctx.font = 'bold 20px Arial';
+          ctx.fillStyle = 'rgba(0,0,0,0.8)';
+          const textWidth = ctx.measureText(text).width;
+          ctx.fillRect(box.x, box.y - 35, textWidth + 20, 35);
+          ctx.fillStyle = 'white';
+          ctx.fillText(text, box.x + 10, box.y - 10);
         } else {
-          setIsLookingAtCamera(false);
+          setFaceData(prev => ({
+            ...prev,
+            age: 0,
+            gender: 'none',
+            isSmiling: false,
+            isLooking: false,
+            confidence: 0
+          }));
         }
-      } else {
-        // 🔹 Reset quando não há rosto
-        setDetectionStatus('none');
-        setConfidence(0);
-        setIsSmiling(false);
-        setAge(0);
-        setIsLookingAtCamera(false);
+
+        lastDetectionTime = currentTime;
+      } catch (err) {
+        console.error('Erro na detecção:', err);
+      }
+
+      if (cameraState === 'camera-active') {
+        animationFrameId = requestAnimationFrame(runDetection);
       }
     };
 
+    // === Inicia ou para o loop ===
     if (cameraState === 'camera-active') {
-      interval = setInterval(runDetection, 500);
+      animationFrameId = requestAnimationFrame(runDetection);
     } else {
-      setFramesAnalyzed(0);
-      setDetectionStatus('none');
-      setConfidence(0);
-      setIsSmiling(false);
-      setAge(0);
-      setIsLookingAtCamera(false);
+      // Reset total
+      setFaceData({
+        age: 0,
+        gender: 'none',
+        isSmiling: false,
+        isLooking: false,
+        confidence: 0,
+        frames: 0
+      });
+      if (overlayCanvasRef.current) {
+        const ctx = overlayCanvasRef.current.getContext('2d', { willReadFrequently: true });
+        ctx?.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+      }
     }
 
+    // === Cleanup ===
     return () => {
-      if (interval) clearInterval(interval);
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
-  }, [cameraState]);
+  }, [cameraState, faceData.frames]); // Adicione faceData.frames se for externo
 
   const requestPermission = async () => {
     try {
@@ -148,13 +226,17 @@ export default function App() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 720 },
+          facingMode: 'user'
         }
       });
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
+        videoRef.current!.onloadedmetadata = () => {
+          videoRef.current!.play();
+        };
         setCameraState('camera-active');
       }
     } catch (error) {
@@ -164,9 +246,9 @@ export default function App() {
   };
 
   const capturePhoto = () => {
-    if (videoRef.current && canvasRef.current) {
+    if (videoRef.current && captureCanvasRef.current) {
       const video = videoRef.current;
-      const canvas = canvasRef.current;
+      const canvas = captureCanvasRef.current;
       const context = canvas.getContext('2d');
 
       if (context) {
@@ -245,7 +327,7 @@ export default function App() {
 
   // Configuração do círculo central baseado na detecção
   const getDetectionCircleColor = () => {
-    switch (detectionStatus) {
+    switch (faceData.gender) {
       case 'none':
         return '#CDCDCD'; // Vermelho
       case 'female':
@@ -256,7 +338,7 @@ export default function App() {
   };
 
   const getGenderLabel = () => {
-    switch (detectionStatus) {
+    switch (faceData.gender) {
       case 'none':
         return '—';
       case 'female':
@@ -291,7 +373,7 @@ export default function App() {
 
         {/* Título */}
         <h1 className="text-gray-900 text-center mb-8">
-          Laboratório de Deteção de Gênero
+          Laboratório de Deteção Facial
         </h1>
 
         {/* Visor da Câmera */}
@@ -337,8 +419,16 @@ export default function App() {
             </div>
           )}
 
+          <canvas ref={captureCanvasRef} className="hidden" />
+
           {/* Canvas oculto para captura */}
-          <canvas ref={canvasRef} className="hidden" />
+          {cameraState === 'camera-active' && (
+            <canvas
+              ref={overlayCanvasRef}
+              className="absolute top-0 left-0 w-full h-full pointer-events-none"
+              style={{ zIndex: 10 }}
+            />
+          )}
 
           {/* Círculo Central de Detecção */}
           {cameraState === 'camera-active' && (
@@ -371,7 +461,7 @@ export default function App() {
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-gray-300">Olha para a câmera: </span>
-                  <span>{isLookingAtCamera ? 'Sim' : 'Não'}</span>
+                  <span>{faceData.isLooking ? 'Sim' : 'Não'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-300">Gênero:</span>
@@ -379,19 +469,19 @@ export default function App() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-300">Confiança:</span>
-                  <span>{confidence}%</span>
+                  <span>{faceData.confidence}%</span>
                 </div>
                 <div className='flex justify-between'>
                   <span className='text-gray-300'>Idade</span>
-                  <span>{age}</span>
+                  <span>{faceData.age}</span>
                 </div>
                 <div className='flex justify-between'>
                   <span className='text-gray-300'>Sorrindo</span>
-                  <span>{isSmiling ? 'Sim' : 'Não'}</span>
+                  <span>{faceData.isSmiling ? 'Sim' : 'Não'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-300">Frames:</span>
-                  <span>{framesAnalyzed}</span>
+                  <span>{faceData.frames}</span>
                 </div>
                 <div className="flex justify-between mt-4">
                   <span className="text-gray-300 mr-2">Desenvolvido por:</span>

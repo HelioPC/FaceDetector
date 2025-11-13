@@ -1,25 +1,47 @@
 #!/bin/bash
+set -e
+
+echo "🧹 Limpando pasta antiga..."
+rm -rf public/models
 mkdir -p public/models
 
-echo "Baixando modelos do face-api.js..."
-curl -o public/models/tiny_face_detector_model-weights_manifest.json \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/tiny_face_detector_model-weights_manifest.json
-curl -o public/models/tiny_face_detector_model-shard1 \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/tiny_face_detector_model-shard1
+# Base URL adaptada (verificar se existe)
+BASE="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@latest/model"
 
-curl -o public/models/face_landmark_68_model-weights_manifest.json \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/face_landmark_68_model-weights_manifest.json
-curl -o public/models/face_landmark_68_model-shard1 \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/face_landmark_68_model-shard1
+echo "⬇️ Baixando modelos (novos formatos) …"
 
-curl -o public/models/age_gender_model-weights_manifest.json \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/age_gender_model-weights_manifest.json
-curl -o public/models/age_gender_model-shard1 \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/age_gender_model-shard1
+declare -a FILES=(
+  "tiny_face_detector_model-weights_manifest.json"
+  "tiny_face_detector_model.bin"
 
-curl -o public/models/face_expression_model-weights_manifest.json \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/face_expression_model-weights_manifest.json
-curl -o public/models/face_expression_model-shard1 \
-  https://cdn.jsdelivr.net/gh/cgarciagl/face-api.js/weights/face_expression_model-shard1
+  "face_landmark_68_model-weights_manifest.json"
+  "face_landmark_68_model.bin"
 
-echo "Modelos baixados com sucesso ✅"
+  "age_gender_model-weights_manifest.json"
+  "age_gender_model.bin"
+
+  "face_recognition_model-weights_manifest.json"
+  "face_recognition_model.bin"
+
+  "face_expression_model-weights_manifest.json"
+  "face_expression_model.bin"
+
+  "ssd_mobilenetv1_model-weights_manifest.json"
+  "ssd_mobilenetv1_model.bin"
+)
+
+for FILE in "${FILES[@]}"; do
+  echo "📥 Baixando $FILE ..."
+  curl -L --fail --retry 5 --retry-delay 3 -o "public/models/$FILE" "$BASE/$FILE" || {
+    echo "⚠️ Falha ao baixar $FILE — verifique URL ou versão."
+  }
+done
+
+echo ""
+echo "🧾 VERIFICAÇÃO FINAL:"
+ls -lh public/models/
+echo ""
+echo "📏 TAMANHO TOTAL:"
+du -h -d 1 public/models
+echo ""
+echo "✅ Download concluído!"

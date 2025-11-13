@@ -25,7 +25,7 @@ const CapturedImageAnalysis: React.FC<Props> = ({ capturedImage, onClose }) => {
         // Carrega os modelos (se ainda não estiverem carregados)
         const MODEL_URL = "/models";
         await Promise.all([
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
           faceapi.nets.ageGenderNet.loadFromUri(MODEL_URL),
           faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
@@ -37,7 +37,10 @@ const CapturedImageAnalysis: React.FC<Props> = ({ capturedImage, onClose }) => {
         const detections = await faceapi
           .detectAllFaces(
             imageRef.current,
-            new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.7 })
+            new faceapi.SsdMobilenetv1Options({
+              minConfidence: 0.5,
+              maxResults: 1,
+            })
           )
           .withFaceLandmarks()
           .withAgeAndGender()
