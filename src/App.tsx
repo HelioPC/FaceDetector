@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import * as faceapi from 'face-api.js';
 import CapturedImageAnalysis from './CapturedImageAnalysis';
 
+// 8R0r9DyJudO6hjCU
+
 type CameraState = 'no-permission' | 'permission-granted' | 'camera-active';
 type DetectionStatus = 'none' | 'female' | 'male';
 
